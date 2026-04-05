@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Emotion Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="page">
+        <h1 class="main-title">Face Emotion Detection</h1>
+        <p class="main-subtitle">
+            Live webcam, image upload, and video upload with improved face crop, notebook preprocessing, and emotion prediction.
+        </p>
+
+        <div class="mode-switch">
+            <button class="mode-btn active" id="liveModeBtn">Live Camera</button>
+            <button class="mode-btn" id="imageModeBtn">Image</button>
+            <button class="mode-btn" id="videoModeBtn">Video</button>
+        </div>
+
+        <!-- LIVE -->
+        <div id="liveModeSection" class="mode-section">
+            <h2 class="section-title">Live Detection</h2>
+
+            <div class="video-wrapper">
+                <video id="video" autoplay playsinline muted></video>
+                <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
+
+                <div class="overlay-box">
+                    <div class="emotion-overlay" id="emotionOverlay">Emotion: -</div>
+                    <div class="probability-overlay" id="probabilityOverlay">Probability: -</div>
+                </div>
+            </div>
+
+            <canvas id="captureCanvas" hidden></canvas>
+
+            <div class="controls">
+                <button id="startBtn" class="btn start-btn">Start Camera</button>
+                <button id="stopBtn" class="btn stop-btn">Stop Camera</button>
+            </div>
+
+            <div class="preview-grid" id="livePreviewGrid">
+                <div class="preview-card">
+                    <h3>Original Frame</h3>
+                    <img id="liveOriginalPreview" alt="Original frame">
+                </div>
+                <div class="preview-card">
+                    <h3>Face Crop</h3>
+                    <img id="liveFaceCropPreview" alt="Face crop">
+                </div>
+                <div class="preview-card">
+                    <h3>Preprocessed 224×224</h3>
+                    <img id="livePreprocessedPreview" alt="Preprocessed image">
+                </div>
+            </div>
+        </div>
+
+        <!-- IMAGE -->
+        <div id="imageModeSection" class="mode-section hidden">
+            <h2 class="section-title">Image Prediction</h2>
+
+            <form id="imageForm" class="upload-card">
+                <label for="imageInput" class="upload-zone">
+                    <input type="file" id="imageInput" accept="image/*" hidden>
+                    <div class="upload-icon">🖼️</div>
+                    <div class="upload-text">
+                        <strong>Choose an image</strong>
+                        <span>PNG, JPG, JPEG, WEBP</span>
+                    </div>
+                </label>
+
+                <div class="preview-box hidden" id="imagePreviewBox">
+                    <img id="imagePreview" alt="Uploaded image preview">
+                </div>
+
+                <button type="submit" class="btn upload-btn" id="imagePredictBtn" disabled>
+                    Predict Image Emotion
+                </button>
+            </form>
+
+            <div class="result-card hidden" id="imageResultCard">
+                <div class="result-main" id="imageResultMain">Emotion: -</div>
+                <div class="result-sub" id="imageResultProb">Probability: -</div>
+
+                <div class="preview-grid">
+                    <div class="preview-card">
+                        <h3>Original Image</h3>
+                        <img id="imageOriginalProcessedPreview" alt="Original image">
+                    </div>
+                    <div class="preview-card">
+                        <h3>Face Crop</h3>
+                        <img id="imageFaceCropPreview" alt="Face crop">
+                    </div>
+                    <div class="preview-card">
+                        <h3>Preprocessed 224×224</h3>
+                        <img id="imagePreprocessedPreview" alt="Preprocessed image">
+                    </div>
+                </div>
+
+                <div class="probabilities-card">
+                    <h3>Emotion Probabilities</h3>
+                    <div id="imageProbabilitiesList"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- VIDEO -->
+        <div id="videoModeSection" class="mode-section hidden">
+            <h2 class="section-title">Video Prediction</h2>
+
+            <form id="videoForm" class="upload-card">
+                <label for="videoInput" class="upload-zone">
+                    <input type="file" id="videoInput" accept="video/*" hidden>
+                    <div class="upload-icon">🎬</div>
+                    <div class="upload-text">
+                        <strong>Choose a video</strong>
+                        <span>MP4, MOV, AVI, MKV, WEBM</span>
+                    </div>
+                </label>
+
+                <div class="preview-box hidden" id="videoPreviewBox">
+                    <video id="videoPreview" controls></video>
+                </div>
+
+                <button type="submit" class="btn upload-btn" id="videoPredictBtn" disabled>
+                    Predict Video Emotion
+                </button>
+            </form>
+
+            <div class="result-card hidden" id="videoResultCard">
+                <div class="result-main" id="videoResultMain">Emotion: -</div>
+                <div class="result-sub" id="videoResultProb">Probability: -</div>
+                <div class="result-sub" id="videoFramesInfo">Frames analyzed: -</div>
+            </div>
+        </div>
+
+        <div class="status-text" id="statusBox">Ready.</div>
+        <div class="error-box hidden" id="errorBox"></div>
+    </div>
+
+    <script>
+        const liveModeBtn = document.getElementById("liveModeBtn");
+        const imageModeBtn = document.getElementById("imageModeBtn");
+        const videoModeBtn = document.getElementById("videoModeBtn");
+
+        const liveModeSection = document.getElementById("liveModeSection");
+        const imageModeSection = document.getElementById("imageModeSection");
+        const videoModeSection = document.getElementById("videoModeSection");
+
+        const statusBox = document.getElementById("statusBox");
+        const errorBox = document.getElementById("errorBox");
+
+        // LIVE
+        const video = document.getElementById("video");
+        const overlayCanvas = document.getElementById("overlayCanvas");
+        const captureCanvas = document.getElementById("captureCanvas");
+        const startBtn = document.getElementById("startBtn");
+        const stopBtn = document.getElementById("stopBtn");
+        const emotionOverlay = document.getElementById("emotionOverlay");
+        const probabilityOverlay = document.getElementById("probabilityOverlay");
+        const liveOriginalPreview = document.getElementById("liveOriginalPreview");
+        const liveFaceCropPreview = document.getElementById("liveFaceCropPreview");
+        const livePreprocessedPreview = document.getElementById("livePreprocessedPreview");
+
+        let stream = null;
+        let intervalId = null;
+        let isSending = false;
+        const emotionBuffer = [];
+        const probBuffer = [];
+        let lastBBox = null;
+
+        // IMAGE
+        const imageForm = document.getElementById("imageForm");
+        const imageInput = document.getElementById("imageInput");
+        const imagePreview = document.getElementById("imagePreview");
+        const imagePreviewBox = document.getElementById("imagePreviewBox");
+        const imagePredictBtn = document.getElementById("imagePredictBtn");
+        const imageResultCard = document.getElementById("imageResultCard");
+        const imageResultMain = document.getElementById("imageResultMain");
+        const imageResultProb = document.getElementById("imageResultProb");
+        const imageProbabilitiesList = document.getElementById("imageProbabilitiesList");
+        const imageOriginalProcessedPreview = document.getElementById("imageOriginalProcessedPreview");
+        const imageFaceCropPreview = document.getElementById("imageFaceCropPreview");
+        const imagePreprocessedPreview = document.getElementById("imagePreprocessedPreview");
+        let selectedImageFile = null;
+
+        // VIDEO
+        const videoForm = document.getElementById("videoForm");
+        const videoInput = document.getElementById("videoInput");
+        const videoPreview = document.getElementById("videoPreview");
+        const videoPreviewBox = document.getElementById("videoPreviewBox");
+        const videoPredictBtn = document.getElementById("videoPredictBtn");
+        const videoResultCard = document.getElementById("videoResultCard");
+        const videoResultMain = document.getElementById("videoResultMain");
+        const videoResultProb = document.getElementById("videoResultProb");
+        const videoFramesInfo = document.getElementById("videoFramesInfo");
+        let selectedVideoFile = null;
+
+        function setMode(mode) {
+            errorBox.classList.add("hidden");
+
+            liveModeBtn.classList.remove("active");
+            imageModeBtn.classList.remove("active");
+            videoModeBtn.classList.remove("active");
+
+            liveModeSection.classList.add("hidden");
+            imageModeSection.classList.add("hidden");
+            videoModeSection.classList.add("hidden");
+
+            if (mode === "live") {
+                liveModeBtn.classList.add("active");
+                liveModeSection.classList.remove("hidden");
+                statusBox.textContent = "Live mode selected.";
+            } else if (mode === "image") {
+                imageModeBtn.classList.add("active");
+                imageModeSection.classList.remove("hidden");
+                stopCamera();
+                statusBox.textContent = "Image mode selected.";
+            } else {
+                videoModeBtn.classList.add("active");
+                videoModeSection.classList.remove("hidden");
+                stopCamera();
+                statusBox.textContent = "Video mode selected.";
+            }
+        }
+
+        liveModeBtn.addEventListener("click", () => setMode("live"));
+        imageModeBtn.addEventListener("click", () => setMode("image"));
+        videoModeBtn.addEventListener("click", () => setMode("video"));
+
+        async function startCamera() {
+            try {
+                errorBox.classList.add("hidden");
+                statusBox.textContent = "Starting camera...";
+
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: "user"
+                    },
+                    audio: false
+                });
+
+                video.srcObject = stream;
+
+                video.onloadedmetadata = () => {
+                    overlayCanvas.width = video.videoWidth;
+                    overlayCanvas.height = video.videoHeight;
+                };
+
+                statusBox.textContent = "Camera started. Live detection is running...";
+
+                if (intervalId) clearInterval(intervalId);
+                intervalId = setInterval(captureAndSendFrame, 350);
+            } catch (error) {
+                errorBox.textContent = "Camera access failed: " + error.message;
+                errorBox.classList.remove("hidden");
+                statusBox.textContent = "Unable to access the camera.";
+            }
+        }
+
+        function stopCamera() {
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
+            }
+
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+
+            video.srcObject = null;
+            emotionOverlay.textContent = "Emotion: -";
+            probabilityOverlay.textContent = "Probability: -";
+            emotionBuffer.length = 0;
+            probBuffer.length = 0;
+            lastBBox = null;
+            clearOverlay();
+
+            liveOriginalPreview.src = "";
+            liveFaceCropPreview.src = "";
+            livePreprocessedPreview.src = "";
+        }
+
+        async function captureAndSendFrame() {
+            if (!stream || isSending || !video.videoWidth || !video.videoHeight) return;
+
+            isSending = true;
+
+            try {
+                const ctx = captureCanvas.getContext("2d");
+
+                const targetWidth = 320;
+                const scale = targetWidth / video.videoWidth;
+                const targetHeight = Math.round(video.videoHeight * scale);
+
+                captureCanvas.width = targetWidth;
+                captureCanvas.height = targetHeight;
+                ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+                const imageData = captureCanvas.toDataURL("image/jpeg", 0.6);
+
+                const response = await fetch("/predict-frame", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ image: imageData })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || "Prediction failed");
+                }
+
+                renderLiveResult(data, targetWidth, targetHeight);
+                statusBox.textContent = "Live emotion updated.";
+            } catch (error) {
+                errorBox.textContent = error.message;
+                errorBox.classList.remove("hidden");
+                statusBox.textContent = "An error occurred during live prediction.";
+            } finally {
+                isSending = false;
+            }
+        }
+
+        function renderLiveResult(data, sentWidth, sentHeight) {
+            errorBox.classList.add("hidden");
+
+            emotionBuffer.push(data.predicted_emotion);
+            if (emotionBuffer.length > 4) emotionBuffer.shift();
+
+            const prob = Number(data.dominant_probability);
+            if (Number.isFinite(prob)) {
+                probBuffer.push(prob);
+                if (probBuffer.length > 4) probBuffer.shift();
+            }
+
+            const stableEmotion = mostFrequent(emotionBuffer);
+            const stableProbability = probBuffer.length > 0
+                ? average(probBuffer).toFixed(2)
+                : "0.00";
+
+            emotionOverlay.textContent = "Emotion: " + stableEmotion;
+            probabilityOverlay.textContent = "Probability: " + stableProbability + "%";
+
+            if (data.bbox) {
+                lastBBox = scaleBBoxToVideo(
+                    data.bbox,
+                    sentWidth,
+                    sentHeight,
+                    video.videoWidth,
+                    video.videoHeight
+                );
+            } else {
+                lastBBox = null;
+            }
+
+            drawFaceBox(lastBBox);
+
+            if (data.original_preview) liveOriginalPreview.src = data.original_preview;
+            if (data.face_crop_preview) liveFaceCropPreview.src = data.face_crop_preview;
+            if (data.preprocessed_preview) livePreprocessedPreview.src = data.preprocessed_preview;
+        }
+
+        function scaleBBoxToVideo(bbox, srcW, srcH, dstW, dstH) {
+            const [x, y, w, h] = bbox;
+            const scaleX = dstW / srcW;
+            const scaleY = dstH / srcH;
+
+            return {
+                x: x * scaleX,
+                y: y * scaleY,
+                w: w * scaleX,
+                h: h * scaleY
+            };
+        }
+
+        function drawFaceBox(box) {
+            const ctx = overlayCanvas.getContext("2d");
+            ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+            if (!box) return;
+
+            ctx.strokeStyle = "#ff8c00";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(box.x, box.y, box.w, box.h);
+        }
+
+        function clearOverlay() {
+            const ctx = overlayCanvas.getContext("2d");
+            ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        }
+
+        function mostFrequent(arr) {
+            const counts = {};
+            let maxCount = 0;
+            let result = arr[0] || "-";
+
+            for (const item of arr) {
+                counts[item] = (counts[item] || 0) + 1;
+                if (counts[item] > maxCount) {
+                    maxCount = counts[item];
+                    result = item;
+                }
+            }
+            return result;
+        }
+
+        function average(arr) {
+            const valid = arr.filter(v => Number.isFinite(v));
+            if (valid.length === 0) return 0;
+            return valid.reduce((a, b) => a + b, 0) / valid.length;
+        }
+
+        function renderProbabilities(probabilities, container) {
+            container.innerHTML = "";
+
+            probabilities.forEach(item => {
+                const row = document.createElement("div");
+                row.className = "prob-row";
+
+                row.innerHTML = `
+                    <div class="prob-top">
+                        <span class="prob-label">${item.emotion}</span>
+                        <span class="prob-value">${item.probability}%</span>
+                    </div>
+                    <div class="bar-bg">
+                        <div class="bar-fill" style="width: ${item.probability}%"></div>
+                    </div>
+                `;
+
+                container.appendChild(row);
+            });
+        }
+
+        imageInput.addEventListener("change", (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            selectedImageFile = file;
+            imagePredictBtn.disabled = false;
+            imageResultCard.classList.add("hidden");
+
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                imagePreview.src = ev.target.result;
+                imagePreviewBox.classList.remove("hidden");
+            };
+            reader.readAsDataURL(file);
+
+            statusBox.textContent = "Image selected.";
+        });
+
+        imageForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            if (!selectedImageFile) return;
+
+            const formData = new FormData();
+            formData.append("file", selectedImageFile);
+
+            imagePredictBtn.disabled = true;
+            imagePredictBtn.textContent = "Predicting...";
+            statusBox.textContent = "Predicting image emotion...";
+
+            try {
+                const response = await fetch("/predict-image", {
+                    method: "POST",
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || "Prediction failed");
+                }
+
+                imageResultMain.textContent = "Emotion: " + data.predicted_emotion;
+                imageResultProb.textContent = "Probability: " + data.dominant_probability + "%";
+
+                if (data.original_preview) imageOriginalProcessedPreview.src = data.original_preview;
+                if (data.face_crop_preview) imageFaceCropPreview.src = data.face_crop_preview;
+                if (data.preprocessed_preview) imagePreprocessedPreview.src = data.preprocessed_preview;
+
+                renderProbabilities(data.probabilities, imageProbabilitiesList);
+                imageResultCard.classList.remove("hidden");
+                statusBox.textContent = "Image prediction completed.";
+            } catch (error) {
+                errorBox.textContent = error.message;
+                errorBox.classList.remove("hidden");
+                statusBox.textContent = "Image prediction failed.";
+            } finally {
+                imagePredictBtn.disabled = false;
+                imagePredictBtn.textContent = "Predict Image Emotion";
+            }
+        });
+
+        videoInput.addEventListener("change", (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            selectedVideoFile = file;
+            videoPredictBtn.disabled = false;
+            videoResultCard.classList.add("hidden");
+
+            const url = URL.createObjectURL(file);
+            videoPreview.src = url;
+            videoPreviewBox.classList.remove("hidden");
+
+            statusBox.textContent = "Video selected.";
+        });
+
+        videoForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            if (!selectedVideoFile) return;
+
+            const formData = new FormData();
+            formData.append("file", selectedVideoFile);
+
+            videoPredictBtn.disabled = true;
+            videoPredictBtn.textContent = "Predicting...";
+            statusBox.textContent = "Analyzing video...";
+
+            try {
+                const response = await fetch("/predict-video", {
+                    method: "POST",
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || "Prediction failed");
+                }
+
+                videoResultMain.textContent = "Emotion: " + data.predicted_emotion;
+                videoResultProb.textContent = "Probability: " + data.dominant_probability + "%";
+                videoFramesInfo.textContent = "Frames analyzed: " + data.frames_analyzed;
+                videoResultCard.classList.remove("hidden");
+                statusBox.textContent = "Video prediction completed.";
+            } catch (error) {
+                errorBox.textContent = error.message;
+                errorBox.classList.remove("hidden");
+                statusBox.textContent = "Video prediction failed.";
+            } finally {
+                videoPredictBtn.disabled = false;
+                videoPredictBtn.textContent = "Predict Video Emotion";
+            }
+        });
+
+        startBtn.addEventListener("click", startCamera);
+        stopBtn.addEventListener("click", stopCamera);
+
+        window.addEventListener("beforeunload", () => {
+            stopCamera();
+        });
+    </script>
+</body>
+</html>
