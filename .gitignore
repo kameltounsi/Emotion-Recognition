@@ -9,14 +9,6 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Models / heavy files
-*.h5
-*.keras
-*.pt
-*.pth
-*.onnx
-*.pb
-
 # Jupyter
 .ipynb_checkpoints/
 
