@@ -10,7 +10,7 @@
     <div class="page">
         <h1 class="main-title">Face Emotion Detection</h1>
         <p class="main-subtitle">
-            Live webcam, image upload, and video upload with improved face crop, notebook preprocessing, and emotion prediction.
+            Live webcam, image upload, and video upload with improved face crop, grayscale preprocessing, and fast emotion prediction.
         </p>
 
         <div class="mode-switch">
@@ -164,11 +164,18 @@
         const livePreprocessedPreview = document.getElementById("livePreprocessedPreview");
 
         let stream = null;
-        let intervalId = null;
+        let liveLoopTimeout = null;
         let isSending = false;
+        let cameraStarted = false;
+
         const emotionBuffer = [];
         const probBuffer = [];
         let lastBBox = null;
+
+        // fréquence rapide
+        const LIVE_DELAY_MS = 180;   // entre 150 et 250 ms = très fluide
+        const CAPTURE_WIDTH = 224;   // plus léger pour accélérer
+        const JPEG_QUALITY = 0.55;   // plus léger => plus rapide
 
         // IMAGE
         const imageForm = document.getElementById("imageForm");
@@ -250,10 +257,10 @@
                     overlayCanvas.height = video.videoHeight;
                 };
 
-                statusBox.textContent = "Camera started. Live detection is running...";
+                cameraStarted = true;
+                statusBox.textContent = "Camera started. Instant live detection running...";
+                startLiveLoop();
 
-                if (intervalId) clearInterval(intervalId);
-                intervalId = setInterval(captureAndSendFrame, 350);
             } catch (error) {
                 errorBox.textContent = "Camera access failed: " + error.message;
                 errorBox.classList.remove("hidden");
@@ -262,9 +269,11 @@
         }
 
         function stopCamera() {
-            if (intervalId) {
-                clearInterval(intervalId);
-                intervalId = null;
+            cameraStarted = false;
+
+            if (liveLoopTimeout) {
+                clearTimeout(liveLoopTimeout);
+                liveLoopTimeout = null;
             }
 
             if (stream) {
@@ -285,6 +294,22 @@
             livePreprocessedPreview.src = "";
         }
 
+        function startLiveLoop() {
+            if (!cameraStarted) return;
+
+            const loop = async () => {
+                if (!cameraStarted) return;
+
+                await captureAndSendFrame();
+
+                if (cameraStarted) {
+                    liveLoopTimeout = setTimeout(loop, LIVE_DELAY_MS);
+                }
+            };
+
+            loop();
+        }
+
         async function captureAndSendFrame() {
             if (!stream || isSending || !video.videoWidth || !video.videoHeight) return;
 
@@ -293,7 +318,7 @@
             try {
                 const ctx = captureCanvas.getContext("2d");
 
-                const targetWidth = 320;
+                const targetWidth = CAPTURE_WIDTH;
                 const scale = targetWidth / video.videoWidth;
                 const targetHeight = Math.round(video.videoHeight * scale);
 
@@ -301,7 +326,7 @@
                 captureCanvas.height = targetHeight;
                 ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
-                const imageData = captureCanvas.toDataURL("image/jpeg", 0.6);
+                const imageData = captureCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
 
                 const response = await fetch("/predict-frame", {
                     method: "POST",
@@ -318,11 +343,11 @@
                 }
 
                 renderLiveResult(data, targetWidth, targetHeight);
-                statusBox.textContent = "Live emotion updated.";
+                statusBox.textContent = "Instant live detection running...";
             } catch (error) {
                 errorBox.textContent = error.message;
                 errorBox.classList.remove("hidden");
-                statusBox.textContent = "An error occurred during live prediction.";
+                statusBox.textContent = "Live prediction error.";
             } finally {
                 isSending = false;
             }
@@ -332,12 +357,12 @@
             errorBox.classList.add("hidden");
 
             emotionBuffer.push(data.predicted_emotion);
-            if (emotionBuffer.length > 4) emotionBuffer.shift();
+            if (emotionBuffer.length > 3) emotionBuffer.shift();
 
             const prob = Number(data.dominant_probability);
             if (Number.isFinite(prob)) {
                 probBuffer.push(prob);
-                if (probBuffer.length > 4) probBuffer.shift();
+                if (probBuffer.length > 3) probBuffer.shift();
             }
 
             const stableEmotion = mostFrequent(emotionBuffer);

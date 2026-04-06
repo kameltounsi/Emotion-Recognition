@@ -11,12 +11,13 @@ from PIL import (
     UnidentifiedImageError,
     ImageEnhance,
 )
+
 from flask import Flask, render_template, request, jsonify
 from tensorflow import keras
 
 app = Flask(__name__)
 
-MODEL_PATH = "model/best_emotion_model.keras"
+MODEL_PATH = "model/emotion_model.h5"
 CLASS_MAP_PATH = "model/class_indices.json"
 IMG_SIZE = 224
 
@@ -70,11 +71,25 @@ try:
 except Exception as e:
     print(f"MediaPipe unavailable: {e}")
 
+# =========================
+# Optional OpenCV
+# =========================
 try:
     import cv2
     CV2_AVAILABLE = True
 except Exception:
     CV2_AVAILABLE = False
+
+haar_cascade = None
+if CV2_AVAILABLE:
+    try:
+        haar_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        if os.path.exists(haar_path):
+            haar_cascade = cv2.CascadeClassifier(haar_path)
+            print("OpenCV Haar Cascade loaded successfully.")
+    except Exception as e:
+        print(f"OpenCV Haar Cascade unavailable: {e}")
+        haar_cascade = None
 
 # =========================
 # Helpers
@@ -122,6 +137,7 @@ def notebook_preprocess_with_preview(image: Image.Image):
 
     return img_array, model_input_pil
 
+
 def make_display_preview(image: Image.Image, size=(320, 320)):
     """
     Display-only preview in grayscale.
@@ -133,6 +149,7 @@ def make_display_preview(image: Image.Image, size=(320, 320)):
     img = ImageEnhance.Contrast(img).enhance(1.08)
     img = img.resize(size, Image.Resampling.LANCZOS)
     return img.convert("RGB")
+
 
 def crop_square_face(rgb: np.ndarray, x1: int, y1: int, x2: int, y2: int, extra_pad_ratio: float = 0.22):
     h, w = rgb.shape[:2]
@@ -239,27 +256,83 @@ def detect_largest_face_mediapipe(image: Image.Image):
 
     square_crop, square_bbox = crop_square_face(rgb, x1, y1, x2, y2, extra_pad_ratio=0.22)
 
+    if square_crop.size == 0:
+        return None, None, None
+
     face_pil = Image.fromarray(square_crop)
     display_crop_pil = make_display_preview(face_pil, size=(320, 320))
 
     return face_pil, square_bbox, display_crop_pil
 
 
-def predict_emotion_from_pil(image: Image.Image, use_face_detection: bool = True):
+def detect_largest_face_opencv(image: Image.Image):
+    """
+    Returns:
+        face_pil, bbox, display_crop_pil
+    bbox = [x1, y1, width, height]
+    """
+    if not CV2_AVAILABLE or haar_cascade is None:
+        return None, None, None
+
+    rgb = np.array(image.convert("RGB"))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+
+    faces = haar_cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(60, 60)
+    )
+
+    if faces is None or len(faces) == 0:
+        return None, None, None
+
+    faces = sorted(faces, key=lambda b: b[2] * b[3], reverse=True)
+    x, y, bw, bh = faces[0]
+
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(rgb.shape[1], x + bw)
+    y2 = min(rgb.shape[0], y + bh)
+
+    square_crop, square_bbox = crop_square_face(rgb, x1, y1, x2, y2, extra_pad_ratio=0.22)
+
+    if square_crop.size == 0:
+        return None, None, None
+
+    face_pil = Image.fromarray(square_crop)
+    display_crop_pil = make_display_preview(face_pil, size=(320, 320))
+
+    return face_pil, square_bbox, display_crop_pil
+
+
+def detect_face_with_fallback(image: Image.Image):
+    """
+    MediaPipe first, then OpenCV fallback.
+    """
+    face_pil, bbox, display_crop_pil = detect_largest_face_mediapipe(image)
+
+    if face_pil is not None:
+        return face_pil, bbox, display_crop_pil
+
+    face_pil, bbox, display_crop_pil = detect_largest_face_opencv(image)
+    return face_pil, bbox, display_crop_pil
+
+
+def predict_emotion_from_pil(image: Image.Image, require_face: bool = True):
     image = ImageOps.exif_transpose(image).convert("RGB")
     original_preview = image_to_base64(make_display_preview(image, size=(320, 320)))
 
-    face_pil = None
-    bbox = None
-    display_crop_pil = None
+    face_pil, bbox, display_crop_pil = detect_face_with_fallback(image)
 
-    if use_face_detection:
-        face_pil, bbox, display_crop_pil = detect_largest_face_mediapipe(image)
-
+    # IMPORTANT: prediction only on detected face
     if face_pil is None:
-        face_pil = image
-        bbox = None
-        display_crop_pil = make_display_preview(face_pil, size=(320, 320))
+        if require_face:
+            raise ValueError("No face detected in the image")
+        else:
+            face_pil = image
+            bbox = None
+            display_crop_pil = make_display_preview(face_pil, size=(320, 320))
 
     face_crop_preview = image_to_base64(display_crop_pil)
 
@@ -307,7 +380,7 @@ def predict_frame():
             return jsonify({"error": "No image data received"}), 400
 
         image = decode_base64_image(data["image"])
-        result = predict_emotion_from_pil(image, use_face_detection=True)
+        result = predict_emotion_from_pil(image, require_face=True)
         return jsonify(result)
 
     except ValueError as e:
@@ -325,7 +398,7 @@ def predict_image():
         file = request.files["file"]
         image = open_uploaded_image(file)
 
-        result = predict_emotion_from_pil(image, use_face_detection=True)
+        result = predict_emotion_from_pil(image, require_face=True)
         return jsonify(result)
 
     except ValueError as e:
@@ -379,8 +452,13 @@ def predict_video():
             if idx % step == 0:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 pil_img = Image.fromarray(rgb)
-                result = predict_emotion_from_pil(pil_img, use_face_detection=True)
-                sampled_results.append(result)
+
+                try:
+                    result = predict_emotion_from_pil(pil_img, require_face=True)
+                    sampled_results.append(result)
+                except ValueError:
+                    # skip frames with no face
+                    pass
 
                 if len(sampled_results) >= 12:
                     break
@@ -390,7 +468,7 @@ def predict_video():
         cap.release()
 
         if not sampled_results:
-            return jsonify({"error": "No readable frames found in video"}), 400
+            return jsonify({"error": "No face detected in the video"}), 400
 
         emotion_votes = {}
         prob_values = []
