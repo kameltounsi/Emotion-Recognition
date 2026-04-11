@@ -9,7 +9,6 @@ from PIL import (
     Image,
     ImageOps,
     UnidentifiedImageError,
-    ImageEnhance,
 )
 
 from flask import Flask, render_template, request, jsonify
@@ -20,6 +19,9 @@ app = Flask(__name__)
 MODEL_PATH = "model/emotion_model.h5"
 CLASS_MAP_PATH = "model/class_indices.json"
 IMG_SIZE = 224
+PREVIEW_SIZE = (320, 320)
+PREVIEW_BACKGROUND = (248, 250, 252)
+FACE_CROP_PAD_RATIO = 0.14
 
 ALLOWED_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "bmp"}
 ALLOWED_VIDEO_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm"}
@@ -102,56 +104,53 @@ def allowed_video_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_VIDEO_EXTENSIONS
 
 
-def image_to_base64(image: Image.Image, quality: int = 90) -> str:
+def image_to_base64(image: Image.Image, quality: int = 95) -> str:
     image = image.convert("RGB")
     buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=quality)
+    image.save(buffer, format="JPEG", quality=quality, subsampling=0)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def to_grayscale_rgb(image: Image.Image) -> Image.Image:
+    gray = ImageOps.exif_transpose(image).convert("L")
+    gray = ImageOps.autocontrast(gray)
+    return gray.convert("RGB")
 
 
 def notebook_preprocess_with_preview(image: Image.Image):
     """
-    Preprocessing forcé en noir et blanc avant prédiction:
+    Grayscale preprocessing for emotion prediction:
     - EXIF transpose
     - grayscale
-    - reconvert to RGB (3 channels) for model compatibility
+    - autocontrast
+    - reconvert to RGB for model compatibility
     - resize 224x224
     - float32
     - NO preprocess_input
     - NO division by 255
     """
-    image = ImageOps.exif_transpose(image)
+    image = to_grayscale_rgb(image)
+    model_input_pil = image.resize((IMG_SIZE, IMG_SIZE), Image.Resampling.LANCZOS)
 
-    # 1) Convert to grayscale
-    gray_image = image.convert("L")
-
-    # 2) Reconvert to RGB so the model still receives 3 channels
-    gray_rgb_image = gray_image.convert("RGB")
-
-    # 3) Resize
-    model_input_pil = gray_rgb_image.resize((IMG_SIZE, IMG_SIZE), Image.Resampling.LANCZOS)
-
-    # 4) Tensor
     img_array = np.asarray(model_input_pil, dtype=np.float32)
     img_array = np.expand_dims(img_array, axis=0)
 
     return img_array, model_input_pil
 
 
-def make_display_preview(image: Image.Image, size=(320, 320)):
+def make_display_preview(image: Image.Image, size=PREVIEW_SIZE, grayscale: bool = False):
     """
-    Display-only preview in grayscale.
-    Does NOT change tensor shape expected by model.
+    Display-only preview that preserves aspect ratio.
     """
-    img = ImageOps.exif_transpose(image)
-    img = img.convert("L")
-    img = ImageOps.autocontrast(img)
-    img = ImageEnhance.Contrast(img).enhance(1.08)
-    img = img.resize(size, Image.Resampling.LANCZOS)
-    return img.convert("RGB")
+    img = to_grayscale_rgb(image) if grayscale else ImageOps.exif_transpose(image).convert("RGB")
+    contained = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
+    preview = Image.new("RGB", size, PREVIEW_BACKGROUND)
+    offset = ((size[0] - contained.width) // 2, (size[1] - contained.height) // 2)
+    preview.paste(contained, offset)
+    return preview
 
 
-def crop_square_face(rgb: np.ndarray, x1: int, y1: int, x2: int, y2: int, extra_pad_ratio: float = 0.22):
+def crop_square_face(rgb: np.ndarray, x1: int, y1: int, x2: int, y2: int, extra_pad_ratio: float = FACE_CROP_PAD_RATIO):
     h, w = rgb.shape[:2]
 
     bw = x2 - x1
@@ -254,13 +253,13 @@ def detect_largest_face_mediapipe(image: Image.Image):
     if x2 <= x1 or y2 <= y1:
         return None, None, None
 
-    square_crop, square_bbox = crop_square_face(rgb, x1, y1, x2, y2, extra_pad_ratio=0.22)
+    square_crop, square_bbox = crop_square_face(rgb, x1, y1, x2, y2, extra_pad_ratio=FACE_CROP_PAD_RATIO)
 
     if square_crop.size == 0:
         return None, None, None
 
     face_pil = Image.fromarray(square_crop)
-    display_crop_pil = make_display_preview(face_pil, size=(320, 320))
+    display_crop_pil = make_display_preview(face_pil, size=PREVIEW_SIZE, grayscale=True)
 
     return face_pil, square_bbox, display_crop_pil
 
@@ -295,13 +294,13 @@ def detect_largest_face_opencv(image: Image.Image):
     x2 = min(rgb.shape[1], x + bw)
     y2 = min(rgb.shape[0], y + bh)
 
-    square_crop, square_bbox = crop_square_face(rgb, x1, y1, x2, y2, extra_pad_ratio=0.22)
+    square_crop, square_bbox = crop_square_face(rgb, x1, y1, x2, y2, extra_pad_ratio=FACE_CROP_PAD_RATIO)
 
     if square_crop.size == 0:
         return None, None, None
 
     face_pil = Image.fromarray(square_crop)
-    display_crop_pil = make_display_preview(face_pil, size=(320, 320))
+    display_crop_pil = make_display_preview(face_pil, size=PREVIEW_SIZE, grayscale=True)
 
     return face_pil, square_bbox, display_crop_pil
 
@@ -321,7 +320,7 @@ def detect_face_with_fallback(image: Image.Image):
 
 def predict_emotion_from_pil(image: Image.Image, require_face: bool = True):
     image = ImageOps.exif_transpose(image).convert("RGB")
-    original_preview = image_to_base64(make_display_preview(image, size=(320, 320)))
+    original_preview = image_to_base64(make_display_preview(image, size=PREVIEW_SIZE))
 
     face_pil, bbox, display_crop_pil = detect_face_with_fallback(image)
 
@@ -332,12 +331,12 @@ def predict_emotion_from_pil(image: Image.Image, require_face: bool = True):
         else:
             face_pil = image
             bbox = None
-            display_crop_pil = make_display_preview(face_pil, size=(320, 320))
+            display_crop_pil = make_display_preview(face_pil, size=PREVIEW_SIZE, grayscale=True)
 
     face_crop_preview = image_to_base64(display_crop_pil)
 
     processed_tensor, model_input_pil = notebook_preprocess_with_preview(face_pil)
-    preprocessed_preview = image_to_base64(make_display_preview(model_input_pil, size=(320, 320)))
+    preprocessed_preview = image_to_base64(make_display_preview(model_input_pil, size=PREVIEW_SIZE, grayscale=True))
 
     preds = emotion_model.predict(processed_tensor, verbose=0)[0]
     pred_idx = int(np.argmax(preds))

@@ -172,10 +172,10 @@
         const probBuffer = [];
         let lastBBox = null;
 
-        // fréquence rapide
-        const LIVE_DELAY_MS = 180;   // entre 150 et 250 ms = très fluide
-        const CAPTURE_WIDTH = 224;   // plus léger pour accélérer
-        const JPEG_QUALITY = 0.55;   // plus léger => plus rapide
+        // Higher quality frame sent to the backend before face detection/crop.
+        const LIVE_DELAY_MS = 260;
+        const CAPTURE_MAX_WIDTH = 640;
+        const JPEG_QUALITY = 0.9;
 
         // IMAGE
         const imageForm = document.getElementById("imageForm");
@@ -243,8 +243,9 @@
 
                 stream = await navigator.mediaDevices.getUserMedia({
                     video: {
-                        width: { ideal: 640 },
-                        height: { ideal: 480 },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        frameRate: { ideal: 24, max: 30 },
                         facingMode: "user"
                     },
                     audio: false
@@ -318,12 +319,14 @@
             try {
                 const ctx = captureCanvas.getContext("2d");
 
-                const targetWidth = CAPTURE_WIDTH;
+                const targetWidth = Math.min(video.videoWidth, CAPTURE_MAX_WIDTH);
                 const scale = targetWidth / video.videoWidth;
                 const targetHeight = Math.round(video.videoHeight * scale);
 
                 captureCanvas.width = targetWidth;
                 captureCanvas.height = targetHeight;
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = "high";
                 ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
                 const imageData = captureCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
