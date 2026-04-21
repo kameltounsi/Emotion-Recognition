@@ -1,19 +1,69 @@
-# Virtual environment
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.pyo
+
+# Virtual environments
 .venv/
 venv/
 env/
+ENV/
 
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# Python packaging and build outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Test, coverage and type-check caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Flask and local configuration
+.env
+.env.*
+!.env.example
+instance/
+logs/
+*.log
 
 # Jupyter
 .ipynb_checkpoints/
+Notebook/.ipynb_checkpoints/
 
-# OS / editor
+# ML datasets, generated media and model artifacts
+data/
+datasets/
+uploads/
+tmp/
+temp/
+*.h5
+*.keras
+*.ckpt
+*.onnx
+*.tflite
+*.pb
+*.npy
+*.npz
+!model/class_indices.json
+
+# OS and editor files
 .DS_Store
 Thumbs.db
+desktop.ini
 .vscode/
 .idea/
+
+# Local miscellaneous files
+*.bak
+*.tmp
